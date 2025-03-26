@@ -30,6 +30,25 @@ def check_github_auth():
     print(" OK!")
     return True
 
+def check_repository_access():
+    """Check if we have proper access to the repository."""
+    print("Checking repository access...", end="", flush=True)
+    
+    # First, try to get the current repository
+    repo_cmd = ["gh", "repo", "view"]
+    result, exit_code = run_command(repo_cmd, check=False)
+    
+    if exit_code != 0:
+        print("\nError: Cannot access repository.")
+        print(result)
+        print("\nMake sure you're in a valid GitHub repository directory.")
+        print("Or run 'gh repo set-default' to specify your repository.")
+        return False
+    
+    # Check if we have write access
+    print(f" OK! Using repository: {result.splitlines()[0]}")
+    return True
+
 def check_tag_exists(tag):
     """Check if a GitHub tag already exists and return True if it does."""
     _, exit_code = run_command(["gh", "release", "view", tag], check=False)
@@ -292,15 +311,51 @@ def create_release_with_progress(cmd, files_to_release):
     if title_index > 0:
         create_cmd.extend(["--title", cmd[title_index]])
     
-    print("\nCreating empty release...", end="")
-    result, exit_code = run_command(create_cmd, check=False)
+    print("\nCreating empty release...")
+    print(f"Command: {' '.join(create_cmd)}")
     
-    if exit_code != 0:
-        print(f"\nError creating release: {result}")
-        return result, exit_code
-    
-    print(" Done!")
-    
+    # Run command with full output
+    try:
+        process = subprocess.Popen(
+            create_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=os.environ.copy()
+        )
+        stdout, stderr = process.communicate()
+        exit_code = process.returncode
+        
+        if exit_code != 0:
+            print(f"\nError creating release (exit code {exit_code})")
+            print(f"STDOUT: {stdout}")
+            print(f"STDERR: {stderr}")
+            
+            # Try to get more info about the GitHub account
+            print("\nAttempting to get additional GitHub account info...")
+            gh_info, _ = run_command(["gh", "auth", "status"], check=False)
+            print(f"GitHub auth status: {gh_info}")
+            
+            # Check for specific common errors
+            if "Unauthorized" in stderr or "authentication" in stderr.lower():
+                print("\nAuthentication error: Your GitHub token might be expired or invalid.")
+                print("Try running 'gh auth login' to re-authenticate.")
+            elif "already exists" in stderr.lower():
+                print("\nA release with this tag already exists. Choose a different tag name.")
+            elif "permission" in stderr.lower():
+                print("\nPermission error: You might not have write access to this repository.")
+            
+            return f"Creation failed: {stderr}", exit_code
+        
+        print(" Done! Release created successfully.")
+        
+    except Exception as e:
+        print(f"\nException during release creation: {str(e)}")
+        return f"Exception: {str(e)}", 1
+
+    # Continue with file uploads...
+    # Rest of the function remains the same
+
     # Upload each file separately
     for current_file_index, file in enumerate(files_to_release):
         file_size = file_sizes[file]
@@ -477,6 +532,10 @@ def main():
     if not check_github_auth():
         return 1
         
+    # Then check repository access
+    if not check_repository_access():
+        return 1
+    
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Create GitHub releases for ROM files")
     parser.add_argument("-a", "--all", action="store_true", help="Release all files without prompting")
