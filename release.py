@@ -144,6 +144,71 @@ def add_sha_files(files_to_release, zip_files, sha_files):
                 result.append(sha_file)
     return result
 
+def fetch_recent_releases(limit=3):
+    """Fetch the most recent GitHub releases."""
+    print(f"Fetching {limit} most recent releases...", end="", flush=True)
+    cmd = ["gh", "release", "list", "--limit", str(limit)]
+    result, exit_code = run_command(cmd, check=False)
+    
+    if exit_code != 0:
+        print("\nError: Failed to fetch recent releases.")
+        print(result)
+        return []
+    
+    print(" OK!")
+    releases = []
+    for line in result.strip().split("\n"):
+        if line.strip():
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                releases.append({
+                    "tag": parts[0],
+                    "title": parts[1],
+                    "date": parts[2] if len(parts) > 2 else "Unknown"
+                })
+    
+    return releases
+
+def upload_to_existing_release(tag, files_to_release):
+    """Upload files to an existing release."""
+    print(f"\nUploading files to release with tag '{tag}'...")
+    
+    # Build the upload command
+    cmd = ["gh", "release", "upload", tag]
+    for file in files_to_release:
+        cmd.append(str(file))
+    
+    # Show final command
+    print("\nFinal command to be executed:")
+    print("================================")
+    print(" ".join(cmd))
+    print("================================")
+    print()
+    
+    # Get confirmation and execute
+    if get_confirmation(False):
+        print("Executing command...")
+        result, exit_code = create_release_with_progress(cmd, [str(file) for file in files_to_release])
+        
+        if exit_code != 0:
+            print("\nUpload failed. Trying alternative approach...")
+            # For upload, we can use a simpler retry mechanism
+            retry_cmd = ["gh", "release", "upload", tag]
+            for file in files_to_release:
+                retry_cmd.append(str(file))
+            
+            result, exit_code = run_command(retry_cmd, check=False)
+        
+        if exit_code == 0:
+            print("Files uploaded successfully.")
+            return True
+        else:
+            print(f"Error: Failed to upload files\n{result}")
+            return False
+    else:
+        print("Operation cancelled by user.")
+        return False
+
 def interactive_mode():
     """Run the script in fully interactive mode with a menu interface."""
     print("=======================================================")
@@ -172,41 +237,142 @@ def interactive_mode():
         for i, file in enumerate(img_files):
             print(f"  {i+1}. {file.name}")
     
-    # Extract tag and title from zip filename or ask user
-    tag = ""
-    title = ""
+    # Ask what the user wants to do
+    print("\nWhat would you like to do?")
+    print("1. Create a new release")
+    print("2. Upload to an existing release")
     
-    if zip_files:
-        zipname = str(zip_files[0])
-        title = zipname
-        tag = extract_tag_from_zip(zipname)
+    action_choice = ""
+    while action_choice not in ["1", "2"]:
+        action_choice = input("Choose an option (1-2): ")
+    
+    # If user chose to upload to existing release
+    if action_choice == "2":
+        # Fetch recent releases
+        releases = fetch_recent_releases(3)
+        if not releases:
+            print("No recent releases found. Creating a new release instead.")
+            action_choice = "1"
+        else:
+            print("\nRecent releases:")
+            for i, release in enumerate(releases):
+                print(f"  {i+1}. {release['tag']} - {release['title']} ({release['date']})")
+            print(f"  {len(releases)+1}. Enter a tag manually")
+            
+            release_choice = ""
+            valid_choices = [str(i) for i in range(1, len(releases) + 2)]
+            while release_choice not in valid_choices:
+                release_choice = input(f"Choose a release (1-{len(releases)+1}): ")
+            
+            # If user chose to enter a tag manually
+            if release_choice == str(len(releases) + 1):
+                tag = input("Enter release tag: ")
+                while not tag:
+                    tag = input("Tag cannot be empty. Enter release tag: ")
+            else:
+                # Use the selected release tag
+                tag = releases[int(release_choice) - 1]["tag"]
+            
+            # Choose which files to include
+            files_to_release = select_files_for_release(zip_files, img_files, sha_files)
+            
+            # Upload files to the existing release
+            if upload_to_existing_release(tag, files_to_release):
+                input("Files uploaded successfully. Press Enter to continue...")
+                return 0
+            else:
+                input("Failed to upload files. Press Enter to continue...")
+                return 1
+    
+    # If user chose to create a new release or fallback from no releases found
+    if action_choice == "1":
+        # Extract tag and title from zip filename or ask user
+        tag = ""
+        title = ""
         
-        if tag:
-            print(f"\nExtracted tag: {tag}")
-            change_tag = input("Do you want to use a different tag? (Y/N): ").lower()
-            if change_tag == "y":
+        if zip_files:
+            zipname = str(zip_files[0])
+            title = zipname
+            tag = extract_tag_from_zip(zipname)
+            
+            if tag:
+                print(f"\nExtracted tag: {tag}")
+                change_tag = input("Do you want to use a different tag? (Y/N): ").lower()
+                if change_tag == "y":
+                    tag = input("Enter release tag: ")
+            else:
+                print("Could not extract tag from ZIP filename.")
                 tag = input("Enter release tag: ")
         else:
-            print("Could not extract tag from ZIP filename.")
+            print("No ZIP files found. Please enter release information manually:")
             tag = input("Enter release tag: ")
-    else:
-        print("No ZIP files found. Please enter release information manually:")
-        tag = input("Enter release tag: ")
-        title = input("Enter release title: ")
-    
-    # Check if title needs to be changed
-    change_title = input(f"Current title: {title}\nDo you want to change it? (Y/N): ").lower()
-    if change_title == "y":
-        title = input("Enter release title: ")
-    
-    # Check if tag already exists on GitHub and get a unique tag
-    print(f"\nChecking if tag \"{tag}\" already exists...")
-    tag = get_unique_tag(tag)
-    
-    # Get release notes
-    notes = get_user_notes(True)
-    
-    # Choose which files to include
+            title = input("Enter release title: ")
+        
+        # Check if title needs to be changed
+        change_title = input(f"Current title: {title}\nDo you want to change it? (Y/N): ").lower()
+        if change_title == "y":
+            title = input("Enter release title: ")
+        
+        # Check if tag already exists on GitHub and get a unique tag
+        print(f"\nChecking if tag \"{tag}\" already exists...")
+        tag = get_unique_tag(tag)
+        
+        # Get release notes
+        notes = get_user_notes(True)
+        
+        # Choose which files to include
+        files_to_release = select_files_for_release(zip_files, img_files, sha_files)
+        
+        if not files_to_release:
+            print("Error: No files selected for release")
+            input("Press Enter to continue...")
+            return 1
+        
+        # Show selected files
+        print("\nSelected files for release:")
+        for file in files_to_release:
+            print(f"  - {file.name}")
+        
+        # Build command for creating the release
+        cmd = ["gh", "release", "create", tag]
+        for file in files_to_release:
+            cmd.append(str(file))
+        # Change the order of title and notes in the command
+        cmd.extend(["--notes", notes, "--title", title])
+        
+        # Show final command
+        print("\nFinal command to be executed:")
+        print("================================")
+        print(" ".join(cmd))
+        print("================================")
+        print()
+        
+        # Get confirmation and execute
+        if get_confirmation(False):
+            print("Executing command...")
+            result, exit_code = create_release_with_progress(cmd, [str(file) for file in files_to_release])
+            
+            # If the first method fails, try the alternative direct method
+            if exit_code != 0:
+                print("\nFirst method failed. Trying alternative approach...")
+                result, exit_code = create_release_with_direct_command(cmd, [str(file) for file in files_to_release])
+            
+            if exit_code == 0:
+                print("Release created successfully.")
+            else:
+                print(f"Error: Failed to create release\n{result}")
+                print("\nPlease check your GitHub token permissions:")
+                print("1. Run 'gh auth login' to re-authenticate")
+                print("2. Choose GitHub.com -> HTTPS -> Generate a token (with 'repo' scope)")
+                print("3. Follow the instructions to complete authentication")
+                input("Press Enter to continue...")
+                return 1
+        
+        input("Press Enter to continue...")
+        return 0
+
+def select_files_for_release(zip_files, img_files, sha_files):
+    """Helper function to select which files to include in a release."""
     print("\nRelease options:")
     print("1. Release all files")
     print("2. Release only .img files")
@@ -255,53 +421,7 @@ def interactive_mode():
     # Add matching SHA files for selected ZIPs
     files_to_release = add_sha_files(files_to_release, zip_files, sha_files)
     
-    if not files_to_release:
-        print("Error: No files selected for release")
-        input("Press Enter to continue...")
-        return 1
-    
-    # Show selected files
-    print("\nSelected files for release:")
-    for file in files_to_release:
-        print(f"  - {file.name}")
-    
-    # Build command for creating the release
-    cmd = ["gh", "release", "create", tag]
-    for file in files_to_release:
-        cmd.append(str(file))
-    # Change the order of title and notes in the command
-    cmd.extend(["--notes", notes, "--title", title])
-    
-    # Show final command
-    print("\nFinal command to be executed:")
-    print("================================")
-    print(" ".join(cmd))
-    print("================================")
-    print()
-    
-    # Get confirmation and execute
-    if get_confirmation(False):
-        print("Executing command...")
-        result, exit_code = create_release_with_progress(cmd, [str(file) for file in files_to_release])
-        
-        # If the first method fails, try the alternative direct method
-        if exit_code != 0:
-            print("\nFirst method failed. Trying alternative approach...")
-            result, exit_code = create_release_with_direct_command(cmd, [str(file) for file in files_to_release])
-        
-        if exit_code == 0:
-            print("Release created successfully.")
-        else:
-            print(f"Error: Failed to create release\n{result}")
-            print("\nPlease check your GitHub token permissions:")
-            print("1. Run 'gh auth login' to re-authenticate")
-            print("2. Choose GitHub.com -> HTTPS -> Generate a token (with 'repo' scope)")
-            print("3. Follow the instructions to complete authentication")
-            input("Press Enter to continue...")
-            return 1
-    
-    input("Press Enter to continue...")
-    return 0
+    return files_to_release
 
 def create_release_with_progress(cmd, files_to_release):
     """Create a release with per-file progress estimation."""
@@ -615,6 +735,7 @@ def main():
     parser.add_argument("-z", "--zip", action="store_true", help="Release only .zip files")
     parser.add_argument("-n", "--notes", action="append", help="Set release notes (use multiple times for multiple lines)")
     parser.add_argument("-y", "--yes", action="store_true", help="Auto-confirm release creation")
+    parser.add_argument("-u", "--upload", help="Upload to existing release tag instead of creating a new one")
     args = parser.parse_args()
     
     # If no args specified, go to interactive mode
@@ -622,8 +743,6 @@ def main():
         return interactive_mode()
     
     # Non-interactive mode
-    # Set interactive mode based on command line arguments
-    interactive = False
     auto_confirm = args.yes
     
     # Check for files to release
@@ -635,6 +754,58 @@ def main():
         print("Error: No .img or .zip files found for release")
         return 1
     
+    # Determine which files to release
+    if args.img:
+        files_to_release = img_files
+    elif args.zip:
+        files_to_release = zip_files
+    else:  # --all or default
+        files_to_release = zip_files + img_files
+    
+    # Add matching SHA files for ZIPs
+    files_to_release = add_sha_files(files_to_release, zip_files, sha_files)
+    
+    if not files_to_release:
+        print("Error: No matching files found for selected option")
+        return 1
+    
+    # If upload to existing release
+    if args.upload:
+        tag = args.upload
+        print(f"Uploading to existing release with tag: {tag}")
+        
+        # Build upload command
+        cmd = ["gh", "release", "upload", tag]
+        for file in files_to_release:
+            cmd.append(str(file))
+        
+        # Show final command
+        print("\nFinal command to be executed:")
+        print("================================")
+        print(" ".join(cmd))
+        print("================================")
+        print()
+        
+        # Get confirmation and execute
+        if get_confirmation(auto_confirm):
+            print("Executing command...")
+            result, exit_code = create_release_with_progress(cmd, [str(file) for file in files_to_release])
+            
+            if exit_code != 0:
+                print("\nUpload failed. Trying alternative approach...")
+                result, exit_code = run_command(cmd, check=False)
+            
+            if exit_code == 0:
+                print("Files uploaded successfully.")
+                return 0
+            else:
+                print(f"Error: Failed to upload files\n{result}")
+                return 1
+        else:
+            print("Operation cancelled by user.")
+            return 0
+    
+    # Otherwise create a new release
     # Extract tag and title from zip filename
     tag = ""
     title = ""
@@ -663,26 +834,10 @@ def main():
     else:
         notes = "- Auto-generated release"
     
-    # Determine which files to release
-    if args.img:
-        files_to_release = img_files
-    elif args.zip:
-        files_to_release = zip_files
-    else:  # --all or default
-        files_to_release = zip_files + img_files
-    
-    # Add matching SHA files for ZIPs
-    files_to_release = add_sha_files(files_to_release, zip_files, sha_files)
-    
-    if not files_to_release:
-        print("Error: No matching files found for selected option")
-        return 1
-    
     # Build command for creating the release
     cmd = ["gh", "release", "create", tag]
     for file in files_to_release:
         cmd.append(str(file))
-    # Change the order of title and notes in the command
     cmd.extend(["--notes", notes, "--title", title])
     
     # Show final command
