@@ -15,6 +15,21 @@ def run_command(cmd, check=True):
     except subprocess.CalledProcessError as e:
         return e.stdout.strip(), e.returncode
 
+def check_github_auth():
+    """Check if GitHub CLI is authenticated properly."""
+    print("Checking GitHub CLI authentication...", end="", flush=True)
+    result, exit_code = run_command(["gh", "auth", "status"], check=False)
+    
+    if exit_code != 0:
+        print("\nError: GitHub CLI is not authenticated properly.")
+        print(result)
+        print("\nPlease run 'gh auth login' to authenticate before using this script.")
+        print("You can use either SSH or HTTPS with a token for authentication.")
+        return False
+        
+    print(" OK!")
+    return True
+
 def check_tag_exists(tag):
     """Check if a GitHub tag already exists and return True if it does."""
     _, exit_code = run_command(["gh", "release", "view", tag], check=False)
@@ -255,11 +270,6 @@ def create_release_with_progress(cmd, files_to_release):
     
     print(f"Total upload size: {format_size(total_size)} across {len(files_to_release)} files")
     
-    # Try to get a better speed estimate if total size is significant
-    measured_speed = None
-    if total_size > 50 * 1024 * 1024:  # Only for uploads > 50MB
-        measured_speed = estimate_upload_speed()
-    
     # Show limitation message to manage user expectations
     print("\nNote: Progress is estimated and may not reflect actual upload status.")
     print("GitHub CLI doesn't provide real-time upload progress information.")
@@ -272,7 +282,16 @@ def create_release_with_progress(cmd, files_to_release):
     overall_start_time = time.time()
     
     # Create the release without files first
-    create_cmd = ["gh", "release", "create", cmd[3], "--notes", cmd[-3], "--title", cmd[-1]]
+    # Fix: Make sure we're using the title and notes correctly
+    title_index = cmd.index("--title") + 1 if "--title" in cmd else -1
+    notes_index = cmd.index("--notes") + 1 if "--notes" in cmd else -1
+    
+    create_cmd = ["gh", "release", "create", cmd[3]]
+    if notes_index > 0:
+        create_cmd.extend(["--notes", cmd[notes_index]])
+    if title_index > 0:
+        create_cmd.extend(["--title", cmd[title_index]])
+    
     print("\nCreating empty release...", end="")
     result, exit_code = run_command(create_cmd, check=False)
     
@@ -290,118 +309,127 @@ def create_release_with_progress(cmd, files_to_release):
         print(f"\nUploading file {current_file_index + 1}/{len(files_to_release)}: {file_name}")
         print(f"File size: {format_size(file_size)}")
         
-        # Determine optimal estimated speed based on file size and measured speed
-        if measured_speed:
-            if file_size > 1024 * 1024 * 1024:  # > 1GB
-                base_speed = measured_speed * 0.8  # 80% of measured speed for large files
-            else:
-                base_speed = measured_speed * 0.9  # 90% of measured speed for smaller files
-        else:
-            # Use default estimates if no measurement
-            if file_size > 1024 * 1024 * 1024:  # > 1GB
-                base_speed = 2 * 1024 * 1024  # 2 MB/s for large uploads
-            else:
-                base_speed = 3 * 1024 * 1024  # 3 MB/s for smaller uploads
+        # Use a conservative speed estimate
+        base_speed = 2 * 1024 * 1024  # 2 MB/s for uploads
+        if file_size > 1024 * 1024 * 1024:  # > 1GB
+            base_speed = 1.5 * 1024 * 1024  # 1.5 MB/s for large files
         
         # Start the upload command for this file
         upload_cmd = ["gh", "release", "upload", cmd[3], file]
-        process = subprocess.Popen(
-            upload_cmd, 
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1
-        )
-        
-        # Set up progress tracking for this file
-        start_time = time.time()
-        last_update = start_time
-        last_estimate = 0
-        adaptive_speed = base_speed
-        last_progress_length = 0
-        
-        try:
-            # Track progress while process is running
-            while process.poll() is None:
-                current_time = time.time()
-                elapsed = current_time - start_time
-                
-                # Only update every second to avoid too many updates
-                if current_time - last_update >= 1:
-                    if elapsed > 0:
-                        # Calculate all progress metrics
-                        time_factor = min(1.0, elapsed / 60)
-                        adaptive_speed = base_speed * (1.0 - (time_factor * 0.5))
-                        current_estimate = min(file_size, adaptive_speed * elapsed)
-                        estimated_uploaded = max(last_estimate, current_estimate)
-                        last_estimate = estimated_uploaded
-                        percentage = min(99.9, (estimated_uploaded / file_size) * 100)
-                        avg_speed = estimated_uploaded / elapsed if elapsed > 0 else 0
-                        speed_str = f"{format_size(avg_speed)}/s"
-                        
-                        # Calculate ETA
-                        if avg_speed > 0:
-                            file_eta = (file_size - estimated_uploaded) / avg_speed
-                            file_eta_str = format_time(file_eta)
-                        else:
-                            file_eta_str = "Calculating..."
-                        
-                        # Determine file state
-                        if percentage < 1:
-                            state = "Starting"
-                        elif percentage < 80:
-                            state = "Uploading"
-                        else:
-                            state = "Finalizing"
-                        
-                        # Create progress bar
-                        bar_length = 20
-                        filled_length = int(bar_length * percentage / 100)
-                        file_bar = '█' * filled_length + '▒' * (bar_length - filled_length)
-                        
-                        # Build progress string
-                        file_progress = f"\rFile {current_file_index+1}/{len(files_to_release)}: [{file_bar}] {percentage:5.1f}% • {format_size(estimated_uploaded)}/{format_size(file_size)} • {speed_str} • ETA: {file_eta_str} • {state}"
-                        
-                        # Ensure the line is completely clear before printing new progress
-                        if last_progress_length > 0:
-                            print('\r' + ' ' * last_progress_length, end='')
-                        
-                        print(file_progress, end='', flush=True)
-                        last_progress_length = len(file_progress)
+
+        # Add retry mechanism for potential auth issues
+        max_retries = 3
+        retry_count = 0
+        while retry_count < max_retries:
+            process = subprocess.Popen(
+                upload_cmd, 
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                env=os.environ.copy()  # Ensure we inherit the environment variables including GitHub tokens
+            )
+            
+            # Set up progress tracking for this file
+            start_time = time.time()
+            last_update = start_time
+            last_estimate = 0
+            adaptive_speed = base_speed
+            last_progress_length = 0
+            
+            try:
+                # Track progress while process is running
+                while process.poll() is None:
+                    current_time = time.time()
+                    elapsed = current_time - start_time
                     
-                    last_update = current_time
+                    # Only update every second to avoid too many updates
+                    if current_time - last_update >= 1:
+                        if elapsed > 0:
+                            # Calculate all progress metrics
+                            time_factor = min(1.0, elapsed / 60)
+                            adaptive_speed = base_speed * (1.0 - (time_factor * 0.5))
+                            current_estimate = min(file_size, adaptive_speed * elapsed)
+                            estimated_uploaded = max(last_estimate, current_estimate)
+                            last_estimate = estimated_uploaded
+                            percentage = min(99.9, (estimated_uploaded / file_size) * 100)
+                            avg_speed = estimated_uploaded / elapsed if elapsed > 0 else 0
+                            speed_str = f"{format_size(avg_speed)}/s"
+                            
+                            # Calculate ETA
+                            if avg_speed > 0:
+                                file_eta = (file_size - estimated_uploaded) / avg_speed
+                                file_eta_str = format_time(file_eta)
+                            else:
+                                file_eta_str = "Calculating..."
+                            
+                            # Determine file state
+                            if percentage < 1:
+                                state = "Starting"
+                            elif percentage < 80:
+                                state = "Uploading"
+                            else:
+                                state = "Finalizing"
+                            
+                            # Create progress bar
+                            bar_length = 20
+                            filled_length = int(bar_length * percentage / 100)
+                            file_bar = '█' * filled_length + '▒' * (bar_length - filled_length)
+                            
+                            # Build progress string
+                            file_progress = f"\rFile {current_file_index+1}/{len(files_to_release)}: [{file_bar}] {percentage:5.1f}% • {format_size(estimated_uploaded)}/{format_size(file_size)} • {speed_str} • ETA: {file_eta_str} • {state}"
+                            
+                            # Ensure the line is completely clear before printing new progress
+                            if last_progress_length > 0:
+                                print('\r' + ' ' * last_progress_length, end='')
+                            
+                            print(file_progress, end='', flush=True)
+                            last_progress_length = len(file_progress)
+                        
+                        last_update = current_time
+                    
+                    # Sleep briefly to avoid high CPU usage
+                    time.sleep(0.1)
                 
-                # Sleep briefly to avoid high CPU usage
-                time.sleep(0.1)
+                # Process completed for this file
+                stdout, stderr = process.communicate()
+                exit_code = process.returncode
+                
+                if exit_code == 0:
+                    break  # Success, exit retry loop
+                elif "authentication" in stderr.lower() or "permission" in stderr.lower():
+                    retry_count += 1
+                    print(f"\nAuthentication issue. Retrying ({retry_count}/{max_retries})...")
+                    time.sleep(2)  # Brief pause before retry
+                else:
+                    # Not an authentication issue, don't retry
+                    print("\n\nError uploading file {}: {}".format(file_name, stderr))
+                    return stderr, exit_code
             
-            # Process completed for this file
-            stdout, stderr = process.communicate()
-            exit_code = process.returncode
-            
-            if exit_code != 0:
-                print("\n\nError uploading file {}: {}".format(file_name, stderr))
-                return stderr, exit_code
-            
-            # Update total uploaded size
-            total_uploaded += file_size
-            
-            # Print newline to ensure next output starts on a clean line
-            print()
-            
-            # Show completion message for this file
-            elapsed_time = time.time() - start_time
-            print(f"✓ File {current_file_index+1}/{len(files_to_release)} completed: {file_name}")
-            print(f"  Size: {format_size(file_size)} • Time: {format_time(elapsed_time)} • Speed: {format_size(file_size/elapsed_time)}/s")
-            
-            # Add simple overall progress update after each file
-            overall_elapsed = time.time() - overall_start_time
-            overall_percentage = (total_uploaded / total_size) * 100
-            print(f"  Overall: {overall_percentage:5.1f}% complete • {format_size(total_uploaded)}/{format_size(total_size)} • Elapsed: {format_time(overall_elapsed)}")
-            
-        except KeyboardInterrupt:
-            print("\n\nProcess interrupted by user. Attempting to clean up...")
-            process.kill()
-            return "Interrupted by user", 1
+                # Update total uploaded size
+                total_uploaded += file_size
+                
+                # Print newline to ensure next output starts on a clean line
+                print()
+                
+                # Show completion message for this file
+                elapsed_time = time.time() - start_time
+                print(f"✓ File {current_file_index+1}/{len(files_to_release)} completed: {file_name}")
+                print(f"  Size: {format_size(file_size)} • Time: {format_time(elapsed_time)} • Speed: {format_size(file_size/elapsed_time)}/s")
+                
+                # Add simple overall progress update after each file
+                overall_elapsed = time.time() - overall_start_time
+                overall_percentage = (total_uploaded / total_size) * 100
+                print(f"  Overall: {overall_percentage:5.1f}% complete • {format_size(total_uploaded)}/{format_size(total_size)} • Elapsed: {format_time(overall_elapsed)}")
+                
+            except KeyboardInterrupt:
+                print("\n\nProcess interrupted by user. Attempting to clean up...")
+                process.kill()
+                return "Interrupted by user", 1
+
+        if retry_count == max_retries:
+            print(f"\n\nFailed to upload {file_name} after {max_retries} attempts.")
+            return "Authentication failure", 1
     
     # All files uploaded successfully
     total_elapsed = time.time() - overall_start_time
@@ -445,6 +473,10 @@ def estimate_upload_speed():
     return default_speed
 
 def main():
+    # First check GitHub CLI authentication
+    if not check_github_auth():
+        return 1
+        
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Create GitHub releases for ROM files")
     parser.add_argument("-a", "--all", action="store_true", help="Release all files without prompting")
