@@ -16,7 +16,7 @@ def run_command(cmd, check=True):
         return e.stdout.strip(), e.returncode
 
 def check_github_auth():
-    """Check if GitHub CLI is authenticated properly."""
+    """Check if GitHub CLI is authenticated properly with correct permissions."""
     print("Checking GitHub CLI authentication...", end="", flush=True)
     result, exit_code = run_command(["gh", "auth", "status"], check=False)
     
@@ -24,9 +24,21 @@ def check_github_auth():
         print("\nError: GitHub CLI is not authenticated properly.")
         print(result)
         print("\nPlease run 'gh auth login' to authenticate before using this script.")
-        print("You can use either SSH or HTTPS with a token for authentication.")
+        print("You must use HTTPS with a token that has 'repo' scope for repository write access.")
         return False
-        
+    
+    # Check if token has repo scope
+    if "Token scopes" in result:
+        scopes = result.split("Token scopes:")[1].split("\n")[0].strip()
+        if "repo" not in scopes.lower():
+            print("\nWarning: Your GitHub token may not have required 'repo' scope.")
+            print("Current scopes:", scopes)
+            print("To re-authenticate with correct scopes, run 'gh auth login'")
+            print("When prompted, choose 'Generate a token' option with 'repo' scope")
+            proceed = input("Do you want to proceed anyway? (y/N): ").lower()
+            if proceed != 'y':
+                return False
+    
     print(" OK!")
     return True
 
@@ -271,10 +283,20 @@ def interactive_mode():
     if get_confirmation(False):
         print("Executing command...")
         result, exit_code = create_release_with_progress(cmd, [str(file) for file in files_to_release])
+        
+        # If the first method fails, try the alternative direct method
+        if exit_code != 0:
+            print("\nFirst method failed. Trying alternative approach...")
+            result, exit_code = create_release_with_direct_command(cmd, [str(file) for file in files_to_release])
+        
         if exit_code == 0:
             print("Release created successfully.")
         else:
             print(f"Error: Failed to create release\n{result}")
+            print("\nPlease check your GitHub token permissions:")
+            print("1. Run 'gh auth login' to re-authenticate")
+            print("2. Choose GitHub.com -> HTTPS -> Generate a token (with 'repo' scope)")
+            print("3. Follow the instructions to complete authentication")
             input("Press Enter to continue...")
             return 1
     
@@ -492,6 +514,56 @@ def create_release_with_progress(cmd, files_to_release):
     print(f"Total size: {format_size(total_size)} • Completed in {format_time(total_elapsed)}")
     return "Success", 0
 
+def create_release_with_direct_command(cmd, files_to_release):
+    """Try creating a release with direct GitHub CLI command."""
+    print("\nTrying alternative release creation method...")
+    
+    # Extract tag name (it's at position 3 in the cmd list)
+    tag = cmd[3]
+    
+    # Find title and notes indices
+    title_index = cmd.index("--title") + 1 if "--title" in cmd else -1
+    notes_index = cmd.index("--notes") + 1 if "--notes" in cmd else -1
+    
+    # Build the direct command
+    direct_cmd = ["gh", "release", "create", tag]
+    
+    # Add files directly to the initial command
+    for file in files_to_release:
+        direct_cmd.append(file)
+    
+    # Add title and notes
+    if title_index > 0:
+        direct_cmd.extend(["--title", cmd[title_index]])
+    if notes_index > 0:
+        direct_cmd.extend(["--notes", cmd[notes_index]])
+    
+    print(f"Command: {' '.join(direct_cmd)}")
+    
+    # Execute the command directly
+    try:
+        result, exit_code = run_command(direct_cmd, check=False)
+        
+        if exit_code != 0:
+            print(f"\nError creating release (exit code {exit_code})")
+            print(f"Output: {result}")
+            
+            # Check for specific permission errors
+            if "HTTP 403" in result:
+                print("\nPermission error: Your GitHub token doesn't have sufficient permissions.")
+                print("Make sure your token has the 'repo' scope to create releases.")
+                print("Run 'gh auth login' and follow the steps to get a token with correct permissions.")
+                print("For more details, visit: https://cli.github.com/manual/gh_auth_login")
+            
+            return result, exit_code
+        
+        print("Release created successfully!")
+        return "Success", 0
+    
+    except Exception as e:
+        print(f"\nException during release creation: {str(e)}")
+        return f"Exception: {str(e)}", 1
+
 def format_size(size_bytes):
     """Format bytes into a human-readable size."""
     if size_bytes < 1024:
@@ -624,10 +696,20 @@ def main():
     if get_confirmation(auto_confirm):
         print("Executing command...")
         result, exit_code = create_release_with_progress(cmd, [str(file) for file in files_to_release])
+        
+        # If the first method fails, try the alternative direct method
+        if exit_code != 0:
+            print("\nFirst method failed. Trying alternative approach...")
+            result, exit_code = create_release_with_direct_command(cmd, [str(file) for file in files_to_release])
+        
         if exit_code == 0:
             print("Release created successfully.")
         else:
             print(f"Error: Failed to create release\n{result}")
+            print("\nPlease check your GitHub token permissions:")
+            print("1. Run 'gh auth login' to re-authenticate")
+            print("2. Choose GitHub.com -> HTTPS -> Generate a token (with 'repo' scope)")
+            print("3. Follow the instructions to complete authentication")
             return 1
     else:
         print("Operation cancelled by user.")
