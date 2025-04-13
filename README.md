@@ -55,6 +55,22 @@ fastboot reboot recovery
 - Enhanced multimedia experience
 
 ## Changelog
+<details>
+<summary><b>April 13, 2025</b></summary>
+
+- Rebased sm8250-common tree
+- Dropped more GPU boost changes
+- Dropped more powerhint changes
+</details>
+
+<details>
+<summary><b>April 12, 2025</b></summary>
+
+- Dropped all Powerhint changes
+- Dropped all boost changes
+- Dropped all "optimization" props
+- Labeled some LOS Health sepolicy
+</details>
 
 <details>
 <summary><b>April 11, 2025</b></summary>
