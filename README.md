@@ -56,6 +56,10 @@ fastboot reboot recovery
 
 ## Changelog
 <details>
+<summary><b>April 18, 2025</b></summary>
+
+- None
+</details>
 <summary><b>April 17, 2025</b></summary>
 
 - Update KerenlSU-Next to 1.0.6
