@@ -51,13 +51,14 @@ fastboot reboot recovery
 - Based on Android 15
 - Pre-rooted with KernelSU-Next (just install the app to use it)
 - HyperOS 2 Global Firmware included
-- Optimized performance and battery life
-- Enhanced multimedia experience
+
 
 ## Changelog
 <details>
-<summary><b>April 19, 2025</b></summary>
-- None
+<summary><b>April 22, 2025</b></summary>
+
+- Added OTA Updater
+- Removed LOS Apps
 </details>
 
 <details>
