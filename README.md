@@ -55,6 +55,12 @@ fastboot reboot recovery
 
 ## Changelog
 <details>
+<summary><b>April 27, 2025</b></summary>
+
+- Fixed VoIP in WhatsApp and other Apps
+- Merged latest common changes from LOS
+</details>
+<details>
 <summary><b>April 22, 2025</b></summary>
 
 - Added OTA Updater
