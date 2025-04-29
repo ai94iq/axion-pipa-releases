@@ -1,11 +1,10 @@
-# AxionAOSP builds for Xiaomi Pad 6
+# AxionAOSP builds for Xiaomi Pad 6 [NO LONGER SUPPORTED]
 
 ![AxionAOSP Logo](https://i.imgur.com/sm5iKFT.png)
 
 > **NOTES:</br>This ROM is provided as-is with no warranty. Use at your own risk.**
 > **</br>HyperOS 2 Global Firmware is already included in ROM**
-
-
+> **</br>⚠️ This device is no longer supported. The final build was released on April 29, 2025.**
 
 ## Installation Guide
 
@@ -54,6 +53,12 @@ fastboot reboot recovery
 
 
 ## Changelog
+<details>
+<summary><b>April 29, 2025</b></summary>
+## Final Axion Build for Pipa
+
+- Fixed some ROM related issues with keyboard and games
+</details>
 <details>
 <summary><b>April 27, 2025</b></summary>
 
